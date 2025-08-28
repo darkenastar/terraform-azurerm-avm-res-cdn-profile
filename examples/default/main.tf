@@ -1,15 +1,17 @@
 terraform {
-  required_version = "~> 1.5"
+  required_version = ">= 1.9, < 2.0"
+
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.74"
+      version = "~> 4.0"
     }
   }
 }
 
 provider "azurerm" {
   features {}
+  # subscription_id = "your-subscription-id" # Replace with your Azure subscription ID
 }
 
 # This ensures we have unique CAF compliant names for our resources.
@@ -25,13 +27,23 @@ resource "azurerm_resource_group" "this" {
 
 # This is the module call
 module "azurerm_cdn_frontdoor_profile" {
-  #source = "/workspaces/terraform-azurerm-avm-res-cdn-profile"
-  source              = "../../"
-  enable_telemetry    = var.enable_telemetry
-  name                = module.naming.cdn_profile.name_unique
+  source = "../../"
+
   location            = azurerm_resource_group.this.location
-  sku                 = "Standard_AzureFrontDoor"
+  name                = module.naming.cdn_profile.name_unique
   resource_group_name = azurerm_resource_group.this.name
+  enable_telemetry    = var.enable_telemetry
+  front_door_endpoints = {
+    ep1_key = {
+      name = "ep1-${module.naming.cdn_endpoint.name_unique}"
+      tags = {
+        environment = "avm-demo"
+      }
+    }
+    ep2_key = {
+      name = "ep2-${module.naming.cdn_endpoint.name_unique}"
+    }
+  }
   front_door_origin_groups = {
     og1_key = {
       name = "og1"
@@ -86,27 +98,10 @@ module "azurerm_cdn_frontdoor_profile" {
       http_port                      = 80
       https_port                     = 443
       host_header                    = "www.contoso2.com"
-      priority                       = 1
+      priority                       = 3
       weight                         = 1
     }
   }
-
-  front_door_endpoints = {
-    ep1_key = {
-      name = "ep1-${module.naming.cdn_endpoint.name_unique}"
-      tags = {
-        environment = "avm-demo"
-      }
-    }
-    ep2_key = {
-      name = "ep2-${module.naming.cdn_endpoint.name_unique}"
-      tags = {
-        environment = "avm-demo"
-      }
-    }
-  }
-  front_door_rule_sets = ["ruleset1", "ruleset2"]
-
   front_door_routes = {
     route1_key = {
       name                      = "route1"
@@ -141,7 +136,7 @@ module "azurerm_cdn_frontdoor_profile" {
       cdn_frontdoor_origin_path = "/originpath"
     }
   }
-
+  front_door_rule_sets = ["ruleset1", "ruleset2"]
   front_door_rules = {
     rule1_key = {
       name              = "examplerule1"
@@ -206,7 +201,7 @@ module "azurerm_cdn_frontdoor_profile" {
           transforms       = ["Uppercase"]
         }]
 
-        request_scheme_conditions = [{ #request protocol
+        request_scheme_conditions = [{
           negate_condition = false
           operator         = "Equal"
           match_values     = ["HTTP"]
@@ -263,15 +258,6 @@ module "azurerm_cdn_frontdoor_profile" {
           destination_path     = "/exampleredirection"
           destination_hostname = "contoso.com"
           destination_fragment = "UrlRedirect"
-        }]
-        route_configuration_override_actions = [{
-          set_origin_groupid            = true
-          forwarding_protocol           = "HttpsOnly"
-          query_string_caching_behavior = "IncludeSpecifiedQueryStrings"
-          query_string_parameters       = ["foo", "clientIp={client_ip}"]
-          compression_enabled           = true
-          cache_behavior                = "OverrideIfOriginMissing"
-          cache_duration                = "365.23:59:59"
         }]
         response_header_actions = [{
           header_action = "Append"
@@ -343,12 +329,6 @@ module "azurerm_cdn_frontdoor_profile" {
           transforms     = ["Uppercase"]
         }]
 
-        request_method_conditions = [{
-          operator         = "Equal"
-          negate_condition = false
-          match_values     = ["DELETE"]
-        }]
-
         url_filename_conditions = [{
           operator         = "Equal"
           negate_condition = false
@@ -358,5 +338,8 @@ module "azurerm_cdn_frontdoor_profile" {
       }
     }
   }
-
+  sku = "Standard_AzureFrontDoor"
+  tags = {
+    environment = "avm-demo"
+  }
 }

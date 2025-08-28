@@ -1,6 +1,3 @@
-
-
-
 resource "azurerm_cdn_frontdoor_firewall_policy" "wafs" {
   for_each = var.front_door_firewall_policies != null ? var.front_door_firewall_policies : {}
 
@@ -12,10 +9,11 @@ resource "azurerm_cdn_frontdoor_firewall_policy" "wafs" {
   custom_block_response_status_code = each.value.custom_block_response_status_code
   enabled                           = each.value.enabled
   redirect_url                      = each.value.redirect_url
-  tags                              = each.value.tags
+  tags                              = each.value.tags != null ? each.value.tags : var.tags
 
   dynamic "custom_rule" {
     for_each = try(each.value.custom_rules, null)
+
     content {
       action                         = custom_rule.value.action
       name                           = custom_rule.value.name
@@ -27,6 +25,7 @@ resource "azurerm_cdn_frontdoor_firewall_policy" "wafs" {
 
       dynamic "match_condition" {
         for_each = try(custom_rule.value.match_conditions, null)
+
         content {
           match_values       = match_condition.value.match_values
           match_variable     = match_condition.value.match_variable
@@ -40,6 +39,7 @@ resource "azurerm_cdn_frontdoor_firewall_policy" "wafs" {
   }
   dynamic "managed_rule" {
     for_each = try(each.value.managed_rules, null)
+
     content {
       action  = managed_rule.value.action
       type    = managed_rule.value.type
@@ -47,6 +47,7 @@ resource "azurerm_cdn_frontdoor_firewall_policy" "wafs" {
 
       dynamic "exclusion" {
         for_each = try(managed_rule.value.exclusions, null)
+
         content {
           match_variable = exclusion.value.match_variable
           operator       = exclusion.value.operator
@@ -55,11 +56,13 @@ resource "azurerm_cdn_frontdoor_firewall_policy" "wafs" {
       }
       dynamic "override" {
         for_each = try(managed_rule.value.overrides, null)
+
         content {
           rule_group_name = override.value.rule_group_name
 
           dynamic "exclusion" {
             for_each = try(override.value.exclusions, null)
+
             content {
               match_variable = exclusion.value.match_variable
               operator       = exclusion.value.operator
@@ -68,6 +71,7 @@ resource "azurerm_cdn_frontdoor_firewall_policy" "wafs" {
           }
           dynamic "rule" {
             for_each = try(override.value.rules, null)
+
             content {
               action  = rule.value.action
               rule_id = rule.value.rule_id
@@ -75,6 +79,7 @@ resource "azurerm_cdn_frontdoor_firewall_policy" "wafs" {
 
               dynamic "exclusion" {
                 for_each = try(rule.value.exclusions, null)
+
                 content {
                   match_variable = exclusion.value.match_variable
                   operator       = exclusion.value.operator
@@ -104,6 +109,7 @@ resource "azurerm_cdn_frontdoor_security_policy" "security_policies" {
 
         dynamic "domain" {
           for_each = local.filtered_epcds_for_security_policy[each.key]
+
           content {
             cdn_frontdoor_domain_id = domain.value
           }

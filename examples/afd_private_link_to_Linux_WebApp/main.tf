@@ -1,15 +1,17 @@
 terraform {
-  required_version = "~> 1.5"
+  required_version = ">= 1.9, < 2.0"
+
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.74"
+      version = "~> 4.0"
     }
   }
 }
 
 provider "azurerm" {
   features {}
+  # subscription_id = "your-subscription-id" # Replace with your Azure subscription ID
 }
 
 # This ensures we have unique CAF compliant names for our resources.
@@ -20,17 +22,17 @@ module "naming" {
 
 # This is required for resource modules
 resource "azurerm_resource_group" "this" {
-  location = "eastus"
+  location = "centralindia"
   name     = "pvtlink-webapp-${module.naming.resource_group.name_unique}"
 }
 
-# Creating App service plan with premium V3 SKU
+# Creating App service plan with Standard S1 SKU for testing only. For Production deployment Premium SKU is recommended.
 resource "azurerm_service_plan" "appservice" {
   location            = azurerm_resource_group.this.location
   name                = "asp-${module.naming.app_service_plan.name_unique}"
   os_type             = "Linux"
   resource_group_name = azurerm_resource_group.this.name
-  sku_name            = "S1"
+  sku_name            = "S1" # Change it to one of PremiumV3 pricing tier for Production deployment. Refer https://learn.microsoft.com/en-us/azure/app-service/overview-hosting-plans#premiumv3-pricing-tier
 }
 
 # Creating the linux web app
@@ -58,14 +60,20 @@ resource "azurerm_app_service_source_control" "sourcecontrol" {
 
 # This is the module call
 module "azurerm_cdn_frontdoor_profile" {
-  source                   = "../../"
-  enable_telemetry         = var.enable_telemetry
-  name                     = module.naming.cdn_profile.name_unique
-  location                 = azurerm_resource_group.this.location
-  sku                      = "Premium_AzureFrontDoor"
-  resource_group_name      = azurerm_resource_group.this.name
-  response_timeout_seconds = 120
-  tags                     = { environment = "dev" }
+  source = "../../"
+
+  location            = azurerm_resource_group.this.location
+  name                = module.naming.cdn_profile.name_unique
+  resource_group_name = azurerm_resource_group.this.name
+  enable_telemetry    = var.enable_telemetry
+  front_door_endpoints = {
+    ep1_key = {
+      name = "ep1-${module.naming.cdn_endpoint.name_unique}"
+      tags = {
+        environment = "avm-demo"
+      }
+    }
+  }
   front_door_origin_groups = {
     og1_key = {
       name = "og1"
@@ -108,17 +116,6 @@ module "azurerm_cdn_frontdoor_profile" {
       }
     }
   }
-
-  front_door_endpoints = {
-    ep1_key = {
-      name = "ep1-${module.naming.cdn_endpoint.name_unique}"
-      tags = {
-        environment = "avm-demo"
-      }
-    }
-  }
-  front_door_rule_sets = ["ruleset1"]
-
   front_door_routes = {
     route1_key = {
       name                   = "route1"
@@ -132,7 +129,7 @@ module "azurerm_cdn_frontdoor_profile" {
       rule_set_names         = ["ruleset1"]
     }
   }
-
+  front_door_rule_sets = ["ruleset1"]
   front_door_rules = {
     rule1_key = {
       name              = "examplerule1"
@@ -197,7 +194,7 @@ module "azurerm_cdn_frontdoor_profile" {
           transforms       = ["Uppercase"]
         }]
 
-        request_scheme_conditions = [{ #request protocol
+        request_scheme_conditions = [{
           negate_condition = false
           operator         = "Equal"
           match_values     = ["HTTP"]
@@ -240,6 +237,9 @@ module "azurerm_cdn_frontdoor_profile" {
       }
     }
   }
+  response_timeout_seconds = 120
+  sku                      = "Premium_AzureFrontDoor"
+  tags                     = { environment = "dev" }
 }
 
 

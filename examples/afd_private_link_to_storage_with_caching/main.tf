@@ -1,15 +1,17 @@
 terraform {
-  required_version = "~> 1.5"
+  required_version = ">= 1.9, < 2.0"
+
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.74"
+      version = "~> 4.0"
     }
   }
 }
 
 provider "azurerm" {
   features {}
+  # subscription_id = "your-subscription-id" # Replace with your Azure subscription ID
 }
 
 # This ensures we have unique CAF compliant names for our resources.
@@ -36,10 +38,10 @@ resource "azurerm_storage_account" "storage" {
 
 # Create a virtual network
 resource "azurerm_virtual_network" "vnet" {
-  address_space       = ["10.0.0.0/16"]
   location            = azurerm_resource_group.this.location
   name                = "storage-vnet"
   resource_group_name = azurerm_resource_group.this.name
+  address_space       = ["10.0.0.0/16"]
 }
 
 # Create a subnet within the virtual network
@@ -80,12 +82,20 @@ resource "azurerm_private_dns_zone_virtual_network_link" "dns_link" {
 
 # This is the module call
 module "azurerm_cdn_frontdoor_profile" {
-  source              = "../../"
-  enable_telemetry    = var.enable_telemetry
-  name                = module.naming.cdn_profile.name_unique
+  source = "../../"
+
   location            = azurerm_resource_group.this.location
-  sku                 = "Premium_AzureFrontDoor"
+  name                = module.naming.cdn_profile.name_unique
   resource_group_name = azurerm_resource_group.this.name
+  enable_telemetry    = var.enable_telemetry
+  front_door_endpoints = {
+    ep1_key = {
+      name = "ep1-${module.naming.cdn_endpoint.name_unique}"
+      tags = {
+        environment = "avm-demo"
+      }
+    }
+  }
   front_door_origin_groups = {
     og1_key = {
       name = "og1"
@@ -128,18 +138,6 @@ module "azurerm_cdn_frontdoor_profile" {
       }
     }
   }
-
-  front_door_endpoints = {
-    ep1_key = {
-      name = "ep1-${module.naming.cdn_endpoint.name_unique}"
-      tags = {
-        environment = "avm-demo"
-      }
-    }
-  }
-
-  front_door_rule_sets = ["ruleset1"]
-
   front_door_routes = {
     route1_key = {
       name                   = "route1"
@@ -160,7 +158,7 @@ module "azurerm_cdn_frontdoor_profile" {
       }
     }
   }
-
+  front_door_rule_sets = ["ruleset1"]
   front_door_rules = {
     rule1_key = {
       name              = "examplerule1"
@@ -225,7 +223,7 @@ module "azurerm_cdn_frontdoor_profile" {
           transforms       = ["Uppercase"]
         }]
 
-        request_scheme_conditions = [{ #request protocol
+        request_scheme_conditions = [{
           negate_condition = false
           operator         = "Equal"
           match_values     = ["HTTP"]
@@ -268,4 +266,5 @@ module "azurerm_cdn_frontdoor_profile" {
       }
     }
   }
+  sku = "Premium_AzureFrontDoor"
 }

@@ -4,7 +4,7 @@ resource "azurerm_cdn_frontdoor_endpoint" "endpoints" {
   cdn_frontdoor_profile_id = azapi_resource.front_door_profile.id
   name                     = each.value.name
   enabled                  = each.value.enabled
-  tags                     = each.value.tags
+  tags                     = each.value.tags != null ? each.value.tags : var.tags
 }
 
 resource "azurerm_cdn_frontdoor_route" "routes" {
@@ -26,6 +26,7 @@ resource "azurerm_cdn_frontdoor_route" "routes" {
 
   dynamic "cache" {
     for_each = each.value.cache
+
     content {
       compression_enabled           = cache.value["compression_enabled"]
       content_types_to_compress     = cache.value["content_types_to_compress"]

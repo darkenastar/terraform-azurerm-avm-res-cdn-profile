@@ -18,8 +18,15 @@ variable "resource_group_name" {
 variable "cdn_endpoint_custom_domains" {
   type = map(object({
     cdn_endpoint_key = string
-    host_name        = string
-    name             = string
+    dns_zone = optional(object({
+      is_azure_dns_zone                  = bool
+      name                               = string
+      cname_record_name                  = string
+      ttl                                = number
+      tags                               = optional(map(string))
+      azure_dns_zone_resource_group_name = optional(string, null)
+    }))
+    name = string
     cdn_managed_https = optional(object({
       certificate_type = string
       protocol_type    = string
@@ -34,9 +41,15 @@ variable "cdn_endpoint_custom_domains" {
   default     = {}
   description = <<Description
   Manages a map of CDN Endpoint Custom Domains. A CDN Endpoint Custom Domain is a custom domain that is associated with a CDN Endpoint.
-  
+
  - `cdn_endpoint_key` - (Required) key of the endpoint defined in variable cdn_endpoints.
- - `host_name` - (Required) The host name of the custom domain. Changing this forces a new CDN Endpoint Custom Domain to be created.
+ - `dns_zone` - (Required) A map of DNS Zone details for the custom domain. Each dns_zone block supports the following: -
+  - `is_azure_dns_zone` - (Required) Is the custom domain hosted on Azure DNS Zone?
+  - `name` - (Required) The name of the DNS Zone for the custom domain.
+  - `cname_record_name` - (Required) The name of the CNAME record to create in the DNS Zone.
+  - `ttl` - (Required) The TTL of the CNAME record.
+  - `tags` - (Optional) A mapping of tags to assign to the CNAME record.
+  - `azure_dns_zone_resource_group_name_name` - (Optional) The name of the Azure resource group where the DNS Zone is located. This is required if the DNS Zone is in azure.
  - `name` - (Required) The name which should be used for this CDN Endpoint Custom Domain. Changing this forces a new CDN Endpoint Custom Domain to be created.
  - `cdn_managed_https` block supports the following:
   - `certificate_type` - (Required) The type of HTTPS certificate. Possible values are `Shared` and `Dedicated`.
@@ -49,21 +62,56 @@ variable "cdn_endpoint_custom_domains" {
  Example Input:
 
   ```terraform
-    cdn_endpoint_custom_domains = {
-      cdn1 = {
-        cdn_endpoint_key = "cdn_ep_key1"
-        host_name        = "www.example.com"
-        name             = "example"
-        cdn_managed_https = {
-          certificate_type = "Shared"
-          protocol_type    = "ServerNameIndication"
-          tls_version      = "TLS12"
-        }
+  cdn_endpoint_custom_domains = {
+    cdn1 = {
+      cdn_endpoint_key = "ep1"
+      dns_zone = {
+        is_azure_dns_zone                  = true
+        name                               = data.azurerm_dns_zone.dns.name
+        cname_record_name                  = "www"
+        azure_dns_zone_resource_group_name = data.azurerm_dns_zone.dns.resource_group_name
+      }
+      name = "example-domain"
+      cdn_managed_https = {
+        certificate_type = "Dedicated"
+        protocol_type    = "ServerNameIndication"
+        tls_version      = "TLS12"
       }
     }
+  }
   ```
+  `Note:` You may face issue in destroying the CDN custom domain when running "terraform destroy" because it requires the Cname record in the DNS zone to be deleted first. In such case run the below commands (only once per subscription) before running the "terraform destroy" command :-
+
+  ```cli
+  \\run below command to register feature to bypass cname check for custom domain deletion
+  az feature register --namespace Microsoft.Cdn --name BypassCnameCheckForCustomDomainDeletion
+
+  \\run below command to check status of the registeration of the feature
+  az feature list -o table --query "[?contains(name, 'Microsoft.Cdn/BypassCnameCheckForCustomDomainDeletion')].{Name:name,State:properties.state}"
+
+  \\run below command once registeration is completed
+  az provider register --namespace Microsoft.Cdn
+  ```
+
   Description
   nullable    = false
+
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoint_custom_domains : v.cdn_managed_https != null ? contains(["Shared", "Dedicated"], v.cdn_managed_https.certificate_type) : true])
+    error_message = "Certificate type must be one of: 'Shared', 'Dedicated'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoint_custom_domains : v.cdn_managed_https != null ? contains(["ServerNameIndication", "IPBased"], v.cdn_managed_https.protocol_type) : true])
+    error_message = "Protocol type must be one of: 'ServerNameIndication', 'IPBased'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoint_custom_domains : v.cdn_managed_https != null ? contains(["TLS10", "TLS12", "None"], v.cdn_managed_https.tls_version) : true])
+    error_message = "TLS version must be one of: 'TLS10', 'TLS12', 'None'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoint_custom_domains : v.user_managed_https != null ? contains(["TLS10", "TLS12", "None"], v.user_managed_https.tls_version) : true])
+    error_message = "TLS version must be one of: 'TLS10', 'TLS12', 'None'."
+  }
 }
 
 variable "cdn_endpoints" {
@@ -76,13 +124,13 @@ variable "cdn_endpoints" {
 
     geo_filters = optional(map(object({
       relative_path = string       # must be "/" for Standard_Microsoft. Must be unique across all filters. Only one allowed for Standard_Microsoft
-      action        = string       # create a validation: allowed values: Allow or Block
-      country_codes = list(string) # Create a validation. Two letter country codes allows e.g. ["US", "CA"]
+      action        = string       # allowed values: Allow or Block
+      country_codes = list(string) # Two letter country codes allows e.g. ["US", "CA"]
     })), {})
 
     is_compression_enabled        = optional(bool)
-    querystring_caching_behaviour = optional(string, "IgnoreQueryString") #create a validation: allowed values: IgnoreQueryString,BypassCaching ,UseQueryString,NotSet for premium verizon.
-    optimization_type             = optional(string)                      # create a validation: allowed values: DynamicSiteAcceleration,GeneralMediaStreaming,GeneralWebDelivery,LargeFileDownload ,VideoOnDemandMediaStreaming
+    querystring_caching_behaviour = optional(string, "IgnoreQueryString") # allowed values: IgnoreQueryString,BypassCaching ,UseQueryString,NotSet for premium verizon.
+    optimization_type             = optional(string)                      # allowed values: DynamicSiteAcceleration,GeneralMediaStreaming,GeneralWebDelivery,LargeFileDownload ,VideoOnDemandMediaStreaming
 
     origins = map(object({
       name       = string
@@ -92,10 +140,10 @@ variable "cdn_endpoints" {
     }))
 
     origin_host_header = optional(string)
-    origin_path        = optional(string) # must start with / e.g. "/media"
-    probe_path         = optional(string) # must start with / e.g. "/foo.bar"
+    origin_path        = optional(string) # must start with '/' e.g. "/media"
+    probe_path         = optional(string) # must start with '/' e.g. "/foo.bar"
 
-    global_delivery_rule = optional(object({ #verify structure later
+    global_delivery_rule = optional(object({
       cache_expiration_action = optional(list(object({
         behavior = string           # Allowed Values: BypassCache, Override and SetIfMissing
         duration = optional(string) # Only allowed when behavior is Override or SetIfMissing. Format: [d.]hh:mm:ss e.g "1.10:30:00"
@@ -118,18 +166,18 @@ variable "cdn_endpoints" {
         redirect_type = string                    # Allowed Values: Found, Moved, PermanentRedirect and TemporaryRedirect
         protocol      = optional(string, "Https") # Allowed Values: MatchRequest, Http and Https
         hostname      = optional(string)
-        path          = optional(string) # Should begin with /
-        fragment      = optional(string) #Specifies the fragment part of the URL. This value must not start with a #
-        query_string  = optional(string) # Specifies the query string part of the URL. This value must not start with a ? or & and must be in <key>=<value> format separated by &.
+        path          = optional(string) # Should begin with '/'
+        fragment      = optional(string) # Specifies the fragment part of the URL. This value must not start with a '#'
+        query_string  = optional(string) # Specifies the query string part of the URL. This value must not start with a '?' or '&' and must be in <key>=<value> format separated by '&'.
       })), [])
       url_rewrite_action = optional(list(object({
-        source_pattern          = string #(Required) This value must start with a / and can't be longer than 260 characters.
-        destination             = string # This value must start with a / and can't be longer than 260 characters.
+        source_pattern          = string # (Required) This value must start with a '/' and can't be longer than 260 characters.
+        destination             = string # This value must start with a '/' and can't be longer than 260 characters.
         preserve_unmatched_path = optional(bool, true)
       })), [])
     }), {})
 
-    delivery_rules = optional(list(object({ #verify structure later
+    delivery_rules = optional(list(object({
       name  = string
       order = number
       cache_expiration_action = optional(object({
@@ -204,7 +252,7 @@ variable "cdn_endpoints" {
         negate_condition = optional(bool, false)
         match_values     = list(string)
       }))
-      request_scheme_condition = optional(object({ #request protocol
+      request_scheme_condition = optional(object({
         operator         = optional(string, "Equal")
         negate_condition = optional(bool, false)
         match_values     = list(string)
@@ -258,11 +306,11 @@ variable "cdn_endpoints" {
       event_hub_authorization_rule_resource_id = optional(string, null)
       event_hub_name                           = optional(string, null)
       marketplace_partner_resource_id          = optional(string, null)
-    }), {})
+    }), null)
   }))
   default     = {}
   description = <<DESCRIPTION
-  Manages a map of CDN Endpoints. A CDN Endpoint is the entity within a CDN Profile containing configuration information regarding caching behaviours and origins. 
+  Manages a map of CDN Endpoints. A CDN Endpoint is the entity within a CDN Profile containing configuration information regarding caching behaviours and origins.
 
   - `name` - (Required) The name of the CDN Endpoint. Changing this forces a new CDN Endpoint to be created.
   - `tags` - (Optional) A mapping of tags to assign to the CDN Endpoint.
@@ -417,7 +465,7 @@ variable "cdn_endpoints" {
     - `event_hub_authorization_rule_resource_id` - (Optional) The resource ID of the event hub authorization rule to send logs and metrics to.
     - `event_hub_name` - (Optional) The name of the event hub. If none is specified, the default event hub will be selected.
     - `marketplace_partner_resource_id` - (Optional) The full ARM resource ID of the Marketplace resource to which you would like to send Diagnostic LogsLogs.
-    
+
   Example Input:
 
   ```terraform
@@ -431,7 +479,7 @@ variable "cdn_endpoints" {
         optimization_type             = "GeneralWebDelivery"
         geo_filters = { # Only one geo filter allowed for Standard_Microsoft sku
           gf1 = {
-            relative_path = "/" 
+            relative_path = "/"
             action        = "Block"
             country_codes = ["AF", "GB"]
           }
@@ -489,7 +537,7 @@ variable "cdn_endpoints" {
         }
         diagnostic_setting = {
           name                        = "storage_diag"
-          log_groups                  = ["allLogs"] 
+          log_groups                  = ["allLogs"]
           storage_account_resource_id = azurerm_storage_account.storage.id
           marketplace_partner_resource_id          = "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/{partnerResourceProvider}/{partnerResourceType}/{partnerResourceName}"
         }
@@ -498,6 +546,91 @@ variable "cdn_endpoints" {
   ```
   DESCRIPTION
   nullable    = false
+
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.querystring_caching_behaviour != null ? contains(["IgnoreQueryString", "BypassCaching", "UseQueryString", "NotSet"], v.querystring_caching_behaviour) : true])
+    error_message = "Querystring caching behaviour must be one of: 'IgnoreQueryString', 'BypassCaching', 'UseQueryString', 'NotSet'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.optimization_type != null ? contains(["DynamicSiteAcceleration", "GeneralMediaStreaming", "GeneralWebDelivery", "LargeFileDownload", "VideoOnDemandMediaStreaming"], v.optimization_type) : true])
+    error_message = "Optimization type must be one of: 'DynamicSiteAcceleration', 'GeneralMediaStreaming', 'GeneralWebDelivery', 'LargeFileDownload', 'VideoOnDemandMediaStreaming'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.diagnostic_setting != null && v.diagnostic_setting.log_analytics_destination_type != null ? contains(["Dedicated", "AzureDiagnostics"], v.diagnostic_setting.log_analytics_destination_type) : true])
+    error_message = "Log analytics destination type must be one of: 'Dedicated', 'AzureDiagnostics'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.geo_filters != null ? alltrue([for _, x in v.geo_filters : contains(["Allow", "Block"], x.action)]) : true])
+    error_message = "Values for geo_filters action must be one of: 'Allow', 'Block'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.geo_filters != null ? alltrue([for _, x in v.geo_filters : length(x.country_codes) > 0]) : true])
+    error_message = "Country codes is required. Values for geo_filters country_codes must be a list of two-letter country codes."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.origin_path != null ? substr(v.origin_path, 0, 1) == "/" : true])
+    error_message = "origin_path must start with '/' e.g '/media'"
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.probe_path != null ? substr(v.probe_path, 0, 1) == "/" : true])
+    error_message = "probe_path must start with '/' e.g '/foo.bar'"
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.cache_expiration_action != null ? alltrue([for _, x in v.global_delivery_rule.cache_expiration_action : contains(["BypassCache", "Override", "SetIfMissing"], x.behavior)]) : true])
+    error_message = "Values for global_delivery_rule cache_expiration_action behavior must be one of: 'BypassCache', 'Override', 'SetIfMissing'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.cache_expiration_action != null ? alltrue([for _, x in v.global_delivery_rule.cache_expiration_action : x.behavior != "BypassCache" ? x.duration != null : true]) : true])
+    error_message = "Duration is required when behavior is 'Override' or 'SelfMissing'.Format should be [d.]hh:mm:ss e.g '1.10:30:00'"
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.cache_key_query_string_action != null ? alltrue([for _, x in v.global_delivery_rule.cache_key_query_string_action : contains(["Exclude", "ExcludeAll", "Include", "IncludeAll"], x.behavior)]) : true])
+    error_message = "Values for global_delivery_rule cache_key_query_string_action behavior must be one of: 'Exclude', 'ExcludeAll', 'Include', 'IncludeAll'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.modify_request_header_action != null ? alltrue([for _, x in v.global_delivery_rule.modify_request_header_action : contains(["Append", "Delete", "Overwrite"], x.action)]) : true])
+    error_message = "Values for global_delivery_rule modify_request_header_action action must be one of: 'Append', 'Delete', 'Overwrite'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.modify_request_header_action != null ? alltrue([for _, x in v.global_delivery_rule.modify_request_header_action : x.action != "Delete" ? x.value != null : true]) : true])
+    error_message = "modify_request_header_action value is required when action is 'Append' or 'Overwrite'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.modify_response_header_action != null ? alltrue([for _, x in v.global_delivery_rule.modify_response_header_action : contains(["Append", "Delete", "Overwrite"], x.action)]) : true])
+    error_message = "Values for global_delivery_rule modify_response_header_action action must be one of: 'Append', 'Delete', 'Overwrite'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.modify_response_header_action != null ? alltrue([for _, x in v.global_delivery_rule.modify_response_header_action : x.action != "Delete" ? x.value != null : true]) : true])
+    error_message = "modify_response_header_action value is required when action is 'Append' or 'Overwrite'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.url_redirect_action != null ? alltrue([for _, x in v.global_delivery_rule.url_redirect_action : contains(["Found", "Moved", "PermanentRedirect", "TemporaryRedirect"], x.redirect_type)]) : true])
+    error_message = "Values for global_delivery_rule url_redirect_action redirect_type must be one of: 'Found', 'Moved', 'PermanentRedirect', 'TemporaryRedirect'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.url_redirect_action != null ? alltrue([for _, x in v.global_delivery_rule.url_redirect_action : x.protocol != null ? contains(["MatchRequest", "Http", "Https"], x.protocol) : true]) : true])
+    error_message = "Values for global_delivery_rule url_redirect_action protocol must be one of: 'MatchRequest', 'Http', 'Https'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.url_redirect_action != null ? alltrue([for _, x in v.global_delivery_rule.url_redirect_action : x.path != null ? substr(x.path, 0, 1) == "/" : true]) : true])
+    error_message = "global_delivery_rule url_redirect_action path must start with '/' e.g '/media'"
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.url_redirect_action != null ? alltrue([for _, x in v.global_delivery_rule.url_redirect_action : x.fragment != null ? substr(x.fragment, 0, 1) != "#" : true]) : true])
+    error_message = "global_delivery_rule url_redirect_action fragment must not start with '#'"
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.url_redirect_action != null ? alltrue([for _, x in v.global_delivery_rule.url_redirect_action : x.query_string != null ? substr(x.query_string, 0, 1) != "?" && substr(x.query_string, 0, 1) != "&" : true]) : true])
+    error_message = "global_delivery_rule url_redirect_action query_string must not start with '?' or '&' and must be in '<key>=<value>' format separated by '&'"
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.url_rewrite_action != null ? alltrue([for _, x in v.global_delivery_rule.url_rewrite_action : substr(x.source_pattern, 0, 1) == "/" && length(x.source_pattern) <= 260]) : true])
+    error_message = "global_delivery_rule url_rewrite_action source_pattern must start with '/' and can't be longer than 260 characters."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.cdn_endpoints : v.global_delivery_rule != null && v.global_delivery_rule.url_rewrite_action != null ? alltrue([for _, x in v.global_delivery_rule.url_rewrite_action : substr(x.destination, 0, 1) == "/" && length(x.destination) <= 260]) : true])
+    error_message = "global_delivery_rule url_rewrite_action destination must start with '/' and can't be longer than 260 characters."
+  }
 }
 
 variable "diagnostic_settings" {
@@ -516,7 +649,7 @@ variable "diagnostic_settings" {
   default     = {}
   description = <<DESCRIPTION
   Manages a map of diagnostic settings on the CDN/front door profile. The map key is deliberately arbitrary to avoid issues where map keys maybe unknown at plan time.
-  
+
   - `name` - (Optional) The name of the diagnostic setting. One will be generated if not set, however this will not be unique if you want to create multiple diagnostic setting resources.
   - `log_categories` - (Optional) A set of log categories to send to the log analytics workspace. Defaults to `[]`.
   - `log_groups` - (Optional) A set of log groups to send to the log analytics workspace. Defaults to `["allLogs"]`.
@@ -581,10 +714,11 @@ variable "enable_telemetry" {
   type        = bool
   default     = true
   description = <<DESCRIPTION
-  This variable controls whether or not telemetry is enabled for the module.
-  For more information see https://aka.ms/avm/telemetryinfo.
-  If it is set to false, then no telemetry will be collected.
-  DESCRIPTION
+This variable controls whether or not telemetry is enabled for the module.
+For more information see <https://aka.ms/avm/telemetryinfo>.
+If it is set to false, then no telemetry will be collected.
+DESCRIPTION
+  nullable    = false
 }
 
 variable "front_door_custom_domains" {
@@ -594,20 +728,18 @@ variable "front_door_custom_domains" {
     host_name   = string
     tls = object({
       certificate_type         = optional(string, "ManagedCertificate")
-      minimum_tls_version      = optional(string, "TLS12") # TLS1.3 is not yet supported in Terraform azurerm_cdn_frontdoor_custom_domain
       cdn_frontdoor_secret_key = optional(string, null)
     })
   }))
   default     = {}
   description = <<DESCRIPTION
   Manages a map of Front Door (standard/premium) Custom Domains.
-  
-  - `name` - (Required) The name which should be used for this Front Door Custom Domain. 
+
+  - `name` - (Required) The name which should be used for this Front Door Custom Domain.
   - `dns_zone_id` - (Optional) The ID of the Azure DNS Zone which should be used for this Front Door Custom Domain.
   - `host_name` - (Required) The host name of the domain. The host_name field must be the FQDN of your domain.
   - `tls` - (Required) A tls block as defined below : -
     - `certificate_type` - (Optional) Defines the source of the SSL certificate. Possible values include 'CustomerCertificate' and 'ManagedCertificate'. Defaults to 'ManagedCertificate'.
-    - `minimum_tls_version` - (Optional) TLS protocol version that will be used for Https. Possible values include 'TLS10' and 'TLS12'. Defaults to 'TLS12'.
     - `cdn_frontdoor_secret_key` - (Optional) Key of the Front Door Secret object. This is required when certificate_type is 'CustomerCertificate'.
   Example Input:
 
@@ -619,7 +751,6 @@ variable "front_door_custom_domains" {
         host_name   = "contoso1.fabrikam.com"
         tls = {
           certificate_type    = "ManagedCertificate"
-          minimum_tls_version = "TLS12" 
           cdn_frontdoor_secret_key = "Secret1_key"
         }
       }
@@ -627,6 +758,11 @@ variable "front_door_custom_domains" {
   ```
   DESCRIPTION
   nullable    = false
+
+  validation {
+    condition     = alltrue([for _, v in var.front_door_custom_domains : contains(["CustomerCertificate", "ManagedCertificate"], v.tls.certificate_type)])
+    error_message = "Certificate type must be one of: 'CustomerCertificate', 'ManagedCertificate'."
+  }
 }
 
 variable "front_door_endpoints" {
@@ -638,8 +774,8 @@ variable "front_door_endpoints" {
   default     = {}
   description = <<DESCRIPTION
   Manages a map of Front Door (standard/premium) Endpoints.
-  
-  - `name` - (Required) The name which should be used for this Front Door Endpoint.  
+
+  - `name` - (Required) The name which should be used for this Front Door Endpoint.
   - `enabled` - (Optional) Specifies if this Front Door Endpoint is enabled? Defaults to true.
   - `tags` - (Optional) Specifies a mapping of tags which should be assigned to the Front Door Endpoint.
   Example Input:
@@ -690,7 +826,7 @@ variable "front_door_firewall_policies" {
     managed_rules = optional(map(object({
       type    = string
       version = string
-      action  = string #default Log
+      action  = string
       exclusions = optional(map(object({
         match_variable = string
         operator       = string
@@ -720,7 +856,7 @@ variable "front_door_firewall_policies" {
   default     = {}
   description = <<DESCRIPTION
   Manages a map of Front Door (standard/premium) Firewall Policies.
-  
+
   - `name` - (Required) The name which should be used for this Front Door Security Policy. Possible values must not be an empty string.
   - `resource_group_name` - (Required) The name of the resource group. Changing this forces a new resource to be created.
   - `sku_name` - (Required) The sku's pricing tier for this Front Door Firewall Policy. Possible values include 'Standard_AzureFrontDoor' or 'Premium_AzureFrontDoor'.
@@ -896,15 +1032,19 @@ variable "front_door_firewall_policies" {
   }
   validation {
     condition     = alltrue([for _, v in var.front_door_firewall_policies : contains(["Detection", "Prevention"], v.mode)])
-    error_message = " Possible values are 'Detection', 'Prevention' for mode"
+    error_message = "Possible values are 'Detection', 'Prevention' for mode"
   }
   validation {
-    condition     = alltrue([for _, v in var.front_door_firewall_policies : contains(["200", "403", "405", "406", "429"], tostring(v.custom_block_response_status_code))])
-    error_message = " Possible values are 200, 403, 405, 406, or 429 for custom_block_response_status_code"
+    condition     = alltrue([for _, v in var.front_door_firewall_policies : v.custom_block_response_status_code == null ? true : contains(["200", "403", "405", "406", "429"], tostring(v.custom_block_response_status_code))])
+    error_message = "Possible values are 200, 403, 405, 406, 429 or null for custom_block_response_status_code"
   }
   validation {
     condition     = alltrue([for _, v in var.front_door_firewall_policies : alltrue([for _, x in v["custom_rules"] : contains(["Allow", "Block", "Log", "Redirect"], x["action"])])])
     error_message = "Possible values are 'Allow', 'Block', 'Log', or 'Redirect' for action"
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_firewall_policies : v.custom_block_response_status_code == null ? alltrue([for _, x in v["custom_rules"] : x["action"] != "Block"]) : true])
+    error_message = "If custom_rules' action is set to 'Block', custom_block_response_status_code cannot be null"
   }
   validation {
     condition     = alltrue([for _, v in var.front_door_firewall_policies : alltrue([for _, x in v["custom_rules"] : contains(["MatchRule", "RateLimitRule"], x["type"])])])
@@ -965,8 +1105,8 @@ variable "front_door_origin_groups" {
   default     = {}
   description = <<DESCRIPTION
   Manages a map of Front Door (standard/premium) Origin groups.
-  
-  - `name` - (Required) The name which should be used for this Front Door Origin Group. 
+
+  - `name` - (Required) The name which should be used for this Front Door Origin Group.
   - `load_balancing` - (Required) A load_balancing block as defined below:-
       - `additional_latency_in_milliseconds` - (Optional) Specifies the additional latency in milliseconds for probes to fall into the lowest latency bucket. Possible values are between 0 and 1000 milliseconds (inclusive). Defaults to 50
       - `sample_size` - (Optional) Specifies the number of samples to consider for load balancing decisions. Possible values are between 0 and 255 (inclusive). Defaults to 4.
@@ -1114,7 +1254,7 @@ variable "front_door_origins" {
   default     = {}
   description = <<DESCRIPTION
   Manages a map of Front Door (standard/premium) Origins.
-  
+
   - `name` - (Required) The name which should be used for this Front Door Origin.
   - `origin_group_key` - (Required) The key of the origin group to which this origin belongs.
   - `host_name` - (Required) The IPv4 address, IPv6 address or Domain name of the Origin.
@@ -1127,10 +1267,10 @@ variable "front_door_origins" {
   - `weight` - (Optional) The weight of the origin in a given origin group for load balancing. Must be between 1 and 1000. Defaults to 500.
   - `private_link` - (Optional) A private_link block as defined below:-
       - `request_message` - (Optional) Specifies the request message that will be submitted to the private_link_target_id when requesting the private link endpoint connection. Values must be between 1 and 140 characters in length. Defaults to Access request for CDN FrontDoor Private Link Origin.
-      - `target_type` - (Optional) Specifies the type of target for this Private Link Endpoint. Possible values are blob, blob_secondary, web and sites.
+      - `target_type` - (Optional) Specifies the type of target for this Private Link Endpoint. Possible values are `blob`, `blob_secondary`, `web`, `sites`, `Gateway`, `managedEnvironments` and `web_secondary`.
       - `location` - (Required) Specifies the location where the Private Link resource should exist. Changing this forces a new resource to be created.
       - `private_link_target_id` - (Required) Specifies the ID of the Private Link resource to connect to.
-  
+
   Example Input:
 
   ```terraform
@@ -1192,7 +1332,6 @@ variable "front_door_origins" {
     )
     error_message = "Possible values must be between 1 & 1000"
   }
-  # Need to verify below validation
   validation {
     condition = alltrue(
       [
@@ -1210,12 +1349,12 @@ variable "front_door_origins" {
       [
         for _, v in var.front_door_origins : v["private_link"] == null ? true : alltrue(
           [
-            for _, x in v["private_link"] : x["target_type"] == null ? true : contains(["blob", "blob_secondary", "web", "sites"], x["target_type"])
+            for _, x in v["private_link"] : x["target_type"] == null ? true : contains(["blob", "blob_secondary", "web", "sites", "Gateway", "managedEnvironments", "web_secondary"], x["target_type"])
           ]
         )
       ]
     )
-    error_message = "Possible values are 'blob', 'blob_secondary', 'web' and 'sites'. Set it to 'null' for Load balancer as origin"
+    error_message = "Possible values are 'blob', 'blob_secondary', 'web', 'sites', 'Gateway', 'managedEnvironments' and 'web_secondary'. Set it to 'null' for Load balancer as origin"
   }
 }
 
@@ -1244,7 +1383,7 @@ variable "front_door_routes" {
   default     = {}
   description = <<DESCRIPTION
   Manages a map of Front Door (standard/premium) Routes.
-  
+
   - `name` - (Required) The name which should be used for this Front Door Route. Valid values must begin with a letter or number, end with a letter or number and may only contain letters, numbers and hyphens with a maximum length of 90 characters.
   - `origin_group_key` - (Required) The key of the origin group to associate the route with.
   - `origin_keys` - (Required) The list of the keys of the origins to associate the route with.
@@ -1379,7 +1518,7 @@ variable "front_door_rules" {
       })), [])
       route_configuration_override_actions = optional(list(object({
         set_origin_groupid            = bool
-        cache_duration                = optional(string) #d.HH:MM:SS (365.23:59:59)
+        cache_duration                = optional(string) # d.HH:MM:SS (365.23:59:59)
         forwarding_protocol           = optional(string, "HttpsOnly")
         query_string_caching_behavior = optional(string)
         query_string_parameters       = optional(list(string))
@@ -1600,7 +1739,7 @@ variable "front_door_rules" {
       - `negate_condition` - (Optional) Should the condition be negated? Possible values are true or false. Defaults to false.
       - `match_values` - (Optional) One or more string or integer values(e.g. "1") representing the value of the POST argument to match. If multiple values are specified, they're evaluated using OR logic.
       - `transforms` - (Optional) The transforms to apply to the match values. Possible values include 'Lowercase', 'RemoveNulls', 'Trim', 'Uppercase', 'UrlDecode' or 'UrlEncode'.
-    - `http_version_conditions` - (Optional) A http_version_conditions block as defined below:- 
+    - `http_version_conditions` - (Optional) A http_version_conditions block as defined below:-
       - `operator` - (Optional) The operator to use when matching the HTTP version. Defaults to 'Equal'.
       - `negate_condition` - (Optional) Should the condition be negated? Possible values are true or false. Defaults to false.
       - `match_values` - (Required) What HTTP version should this condition match? Possible values 2.0, 1.1, 1.0 or 0.9.
@@ -1632,7 +1771,7 @@ variable "front_door_rules" {
       - `transforms` - (Optional) The transforms to apply to the match values. Possible values include 'Lowercase', 'RemoveNulls', 'Trim', 'Uppercase', 'UrlDecode' or 'UrlEncode'.
       - `negate_condition` - (Optional) Should the condition be negated? Possible values are true or false. Defaults to false.
     - `ssl_protocol_conditions` - (Optional) A ssl_protocol_conditions block as defined below:-
-      - `match_values` - (Required) The values to match against. Possible values include 'TLSv1', 'TLSv1.1' and 'TLSv1.2'.  'TLSv1.3' support yet to be included in terraform. 
+      - `match_values` - (Required) The values to match against. Possible values include 'TLSv1', 'TLSv1.1' and 'TLSv1.2'.  'TLSv1.3' support yet to be included in terraform.
       - `operator` - (Optional) The operator to use when matching the SSL protocol. Defaults to 'Equal'.
       - `negate_condition` - (Optional) Should the condition be negated? Possible values are true or false. Defaults to false.
 
@@ -1749,6 +1888,111 @@ variable "front_door_rules" {
   ```
   DESCRIPTION
   nullable    = false
+
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.behavior_on_match != null ? contains(["Continue", "Stop"], v.behavior_on_match) : true])
+    error_message = "The behavior_on_match must be either 'Continue' or 'Stop'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.order > 0])
+    error_message = "The order must be greater than 0."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.url_redirect_actions != null ? alltrue([for _, x in v.actions.url_redirect_actions : contains(["Moved", "Found", "TemporaryRedirect", "PermanentRedirect", "SeeOther"], x.redirect_type)]) : true])
+    error_message = "The redirect_type must be either 'Moved', 'Found', 'TemporaryRedirect', 'PermanentRedirect' or 'SeeOther'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.url_redirect_actions != null ? alltrue([for _, x in v.actions.url_redirect_actions : contains(["Http", "Https", "MatchRequest"], x.redirect_protocol)]) : true])
+    error_message = "The redirect_protocol must be either 'Http', 'Https' or 'MatchRequest'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.url_redirect_actions != null ? alltrue([for _, x in v.actions.url_redirect_actions : length(x.destination_hostname) <= 2048]) : true])
+    error_message = "The destination_hostname must be a string between 0 and 2048 characters in length."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.route_configuration_override_actions != null ? alltrue([for _, x in v.actions.route_configuration_override_actions : contains(["HttpOnly", "HttpsOnly", "MatchRequest"], x.forwarding_protocol)]) : true])
+    error_message = "The forwarding_protocol must be either 'HttpOnly', 'HttpsOnly' or 'MatchRequest'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.route_configuration_override_actions != null ? alltrue([for _, x in v.actions.route_configuration_override_actions : x.query_string_caching_behavior != null ? contains(["IgnoreQueryString", "IgnoreSpecifiedQueryStrings", "IncludeSpecifiedQueryStrings", "UseQueryString"], x.query_string_caching_behavior) : true]) : true])
+    error_message = "The query_string_caching_behavior if used must be either 'IgnoreQueryString', 'IgnoreSpecifiedQueryStrings', 'IncludeSpecifiedQueryStrings' or 'UseQueryString'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.route_configuration_override_actions != null ? alltrue([for _, x in v.actions.route_configuration_override_actions : x.cache_behavior != null ? contains(["HonorOrigin", "OverrideAlways", "OverrideIfOriginMissing", "Disabled"], x.cache_behavior) : true]) : true])
+    error_message = "The cache_behavior if used must be either 'HonorOrigin', 'OverrideAlways', 'OverrideIfOriginMissing' or 'Disabled'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.response_header_actions != null ? alltrue([for _, x in v.actions.response_header_actions : contains(["Append", "Delete", "Overwrite"], x.header_action)]) : true])
+    error_message = "The header_action for response_header_actions must be either 'Append', 'Delete' or 'Overwrite'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.response_header_actions != null ? alltrue([for _, x in v.actions.response_header_actions : contains(["Append", "Overwrite"], x.header_action) ? x.value != null : true]) : true])
+    error_message = "The value is required if the header_action is set to 'Append' or 'Overwrite'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.request_header_actions != null ? alltrue([for _, x in v.actions.request_header_actions : contains(["Append", "Delete", "Overwrite"], x.header_action)]) : true])
+    error_message = "The header_action for request_header_actions must be either 'Append', 'Delete' or 'Overwrite'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.actions.request_header_actions != null ? alltrue([for _, x in v.actions.request_header_actions : contains(["Append", "Overwrite"], x.header_action) ? x.value != null : true]) : true])
+    error_message = "The value is required if the header_action is set to 'Append' or 'Overwrite'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.remote_address_conditions != null ? alltrue([for _, x in v.conditions.remote_address_conditions : contains(["Any", "IPMatch", "GeoMatch"], x.operator)]) : true])
+    error_message = "The operator for remote_address_conditions must be either 'Any', 'IPMatch' or 'GeoMatch'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.query_string_conditions != null ? alltrue([for _, x in v.conditions.query_string_conditions : contains(["BeginsWith", "Contains", "EndsWith", "Equal", "LessThan"], x.operator)]) : true])
+    error_message = "The operator for query_string_conditions must be either 'BeginsWith', 'Contains', 'EndsWith', 'Equal' or 'LessThan'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.post_args_conditions != null ? alltrue([for _, x in v.conditions.post_args_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for post_args_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.request_uri_conditions != null ? alltrue([for _, x in v.conditions.request_uri_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for request_uri_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.request_header_conditions != null ? alltrue([for _, x in v.conditions.request_header_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for request_header_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.request_body_conditions != null ? alltrue([for _, x in v.conditions.request_body_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for request_body_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.url_path_conditions != null ? alltrue([for _, x in v.conditions.url_path_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for url_path_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.url_file_extension_conditions != null ? alltrue([for _, x in v.conditions.url_file_extension_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for url_file_extension_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.url_filename_conditions != null ? alltrue([for _, x in v.conditions.url_filename_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for url_filename_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.cookies_conditions != null ? alltrue([for _, x in v.conditions.cookies_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for cookies_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.socket_address_conditions != null ? alltrue([for _, x in v.conditions.socket_address_conditions : x.operator != null ? contains(["Any", "IPMatch"], x.operator) : true]) : true])
+    error_message = "socket_address_conditions operator must be either 'Any' or 'IPMatch'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.client_port_conditions != null ? alltrue([for _, x in v.conditions.client_port_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for client_port_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.server_port_conditions != null ? alltrue([for _, x in v.conditions.server_port_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for server_port_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.front_door_rules : v.conditions.host_name_conditions != null ? alltrue([for _, x in v.conditions.host_name_conditions : contains(["Any", "BeginsWith", "Contains", "EndsWith", "Equal", "LessThan", "LessThanOrEqual", "GreaterThan", "greaterThanOrEqual", "RegEx"], x.operator)]) : true])
+    error_message = "The operator for host_name_conditions must be either 'Any', 'BeginsWith', 'Contains', 'EndsWith', 'Equal', 'LessThan', 'LessThanOrEqual', 'GreaterThan', 'greaterThanOrEqual' or 'RegEx'."
+  }
 }
 
 variable "front_door_secrets" {
@@ -1759,8 +2003,8 @@ variable "front_door_secrets" {
   default     = {}
   description = <<DESCRIPTION
   Manages a map of Front Door (standard/premium) Secrets.
-  
-  - `name` - (Required) The name which should be used for this Front Door Secret. 
+
+  - `name` - (Required) The name which should be used for this Front Door Secret.
   - `key_vault_certificate_id` - (Required) The ID of the Key Vault certificate resource to use.
   Example Input:
 
@@ -1796,7 +2040,7 @@ variable "front_door_security_policies" {
   default     = {}
   description = <<DESCRIPTION
   Manages a map of Front Door (standard/premium) Security Policies.
-  
+
   - `name` - (Required) The name which should be used for this Front Door Security Policy. Possible values must not be an empty string.
   - `firewall` - (Required) An firewall block as defined below: -
   - `front_door_firewall_policy_key` - (Required) the key of Front Door Firewall Policy that should be linked to this Front Door Security Policy.
@@ -1851,7 +2095,7 @@ variable "lock" {
   default     = null
   description = <<DESCRIPTION
   Controls the Resource Lock configuration for this resource. The following properties can be specified:
-  
+
   - `kind` - (Required) The type of lock. Possible values are `\"CanNotDelete\"` and `\"ReadOnly\"`.
   - `name` - (Optional) The name of the lock. If not specified, a name will be generated based on the `kind` value. Changing this forces the creation of a new resource.
   Example Input:
@@ -1878,7 +2122,7 @@ variable "managed_identities" {
   default     = {}
   description = <<DESCRIPTION
   Controls the Managed Identities configuration on this resource. The following properties can be specified:
-  
+
   - `system_assigned` - (Optional) Specifies if the System Assigned Managed Identity should be enabled.
   - `user_assigned_resource_ids` - (Optional) Specifies a list of User Assigned Managed Identity resource IDs to be assigned to this resource.
   Example Input:
@@ -1895,6 +2139,178 @@ variable "managed_identities" {
   nullable    = false
 }
 
+variable "metric_alerts" {
+  type = map(object({
+    name = string
+    criterias = optional(list(object({
+      metric_namespace       = string
+      metric_name            = string
+      aggregation            = string # Possible values are Average, Count, Minimum, Maximum and Total
+      operator               = string # Possible values are Equals, GreaterThan, GreaterThanOrEqual, LessThan and LessThanOrEqual
+      threshold              = number
+      skip_metric_validation = optional(bool, false)
+      dimensions = optional(list(object({
+        name     = string
+        operator = string
+        values   = list(string)
+      })))
+    })), [])
+    actions = optional(list(object({
+      action_group_id    = string
+      webhook_properties = optional(map(string))
+    })), [])
+    dynamic_criterias = optional(list(object({
+      alert_sensitivity = string # Possible values are 'Low', 'Medium' and 'High'
+      aggregation       = string # Possible values are 'Average', 'Count', 'Minimum', 'Maximum' and 'Total'.
+      operator          = string # Possible values are 'GreaterThan', 'LessThan', 'GreaterOrLessThan'.
+      dimension = optional(list(object({
+        name     = string
+        operator = string # Possible values are 'Include', 'Exclude' and 'StartsWith'.
+        values   = list(string)
+      })), [])
+      evaluation_failure_count = optional(number, 4)
+      evaluation_total_count   = optional(number, 4)
+      ignore_data_before       = optional(string) # The ISO8601 date from which to start learning the metric historical data and calculate the dynamic thresholds.
+      metric_namespace         = string
+      metric_name              = string
+      skip_metric_validation   = optional(bool, false)
+    })), [])
+    application_insights_web_test_location_availability_criterias = optional(list(object({
+      component_id          = string
+      failed_location_count = number
+      web_test_id           = string
+    })), [])
+    auto_mitigate            = optional(bool, true)
+    description              = optional(string)
+    enabled                  = optional(bool, true)
+    frequency                = optional(string, "PT1M") # Possible values are PT1M, PT5M, PT15M, PT30M and PT1H
+    severity                 = optional(number, 3)      # Possible values are 0, 1, 2, 3 and 4
+    target_resource_type     = optional(string)         # This is Required when using a Subscription as scope, a Resource Group as scope or Multiple Scopes.
+    target_resource_location = optional(string)         # This is Required when using a Subscription as scope, a Resource Group as scope or Multiple Scopes.
+    window_size              = optional(string, "PT5M") # This value must be greater than 'frequency'. Possible values are PT1M, PT5M, PT15M, PT30M, PT1H, PT6H, PT12H and P1D
+    tags                     = optional(map(string))
+  }))
+  default     = {}
+  description = <<DESCRIPTION
+  Manages a map of Metric Alerts to create on the cdn/Front door profile.
+
+  - `name` - (Required) The name of the metric alert.Changing this forces a new resource to be created.
+  - `auto_mitigate` - (Optional) If set to true, automatically mitigates the alert. Defaults to `true`.
+  - `description` - (Optional) The description of the metric alert.
+  - `enabled` - (Optional) If set to true, enables the metric alert. Defaults to `true`.
+  - `frequency` - (Optional) The frequency of the metric alert. Possible values are `PT1M`, `PT5M`, `PT15M`, `PT30M` and `PT1H`. Defaults to `PT1M`.
+  - `severity` - (Optional) The severity of the metric alert. Possible values are `0`, `1`, `2`, `3` and `4`. Defaults to `3`.
+  - `target_resource_type` - (Optional) The type of the target resource. This is Required when using a Subscription as scope, a Resource Group as scope or Multiple Scopes.
+  - `target_resource_location` - (Optional) The location of the target resource. This is Required when using a Subscription as scope, a Resource Group as scope or Multiple Scopes.
+  - `window_size` - (Optional) The period of time that is used to monitor alert activity, represented in ISO 8601 duration format. This value must be greater than `frequency`. Possible values are `PT1M`, `PT5M`, `PT15M`, `PT30M`, `PT1H`, `PT6H`, `PT12H` and `P1D`. Defaults to `PT5M`.
+  - `tags` - (Optional) A map of tags to assign to the metric alert.
+  - `actions` - (Optional) A list of actions blocks as defined below:-
+    - `action_group_id` - (Required) The ID of the action group, can be sourced from the `azurerm_monitor_action_group` resource.
+    - `webhook_properties` - (Optional) A map of webhook properties.
+  - `criterias` - (Optional) A list of criterias blocks as defined below:-
+    - `metric_namespace` - (Required) The namespace of the metric.
+    - `metric_name` - (Required) The name of the metric.
+    - `aggregation` - (Required) The statistic that runs over the metric values. Possible values are `Average`, `Count`, `Minimum`, `Maximum` and `Total`.
+    - `operator` - (Required) The operator of the metric. Possible values are `Equals`, `GreaterThan`, `GreaterThanOrEqual`, `LessThan` and `LessThanOrEqual`.
+    - `threshold` - (Required) The criteria threshold value that activates the alert.
+    - `skip_metric_validation` - (Optional) If set to true, skips the validation of the metric. Defaults to `false`.
+    - `dimensions` - (Optional) A list of dimensions blocks as defined below:-
+      - `name` - (Required) The name of the dimension.
+      - `operator` - (Required) The operator of the dimension. Possible values are `Include`, `Exclude` and `StartsWith`.
+      - `values` - (Required) The values of the dimension.
+  - `dynamic_criterias` - (Optional) A list of dynamic_criteria blocks as defined below:-
+    - `alert_sensitivity` - (Required) The sensitivity of the alert. Possible values are `Low`, `Medium` and `High`.
+    - `aggregation` - (Required) The aggregation type of the metric. Possible values are `Average`, `Count`, `Minimum`, `Maximum` and `Total`.
+    - `operator` - (Required) The operator of the metric. Possible values are `GreaterThan`, `LessThan`, `GreaterOrLessThan`.
+    - `dimension` - (Optional) A list of dimension blocks as defined below:-
+      - `name` - (Required) The name of the dimension.
+      - `operator` - (Required) The operator of the dimension. Possible values are `Include`, `Exclude` and `StartsWith`.
+      - `values` - (Required) The values of the dimension.
+    - `evaluation_failure_count` - (Optional) The number of consecutive breaches of the threshold required to trigger an alert. Defaults to `4`.
+    - `evaluation_total_count` - (Optional) The number of consecutive evaluations required to trigger an alert.The lookback time window is calculated based on the aggregation granularity (window_size) and the selected number of aggregated points. Defaults to `4`.
+    - `ignore_data_before` - (Optional) The ISO8601 date from which to start learning the metric historical data and calculate the dynamic thresholds.
+    - `metric_namespace` - (Required) The namespace of the metric.
+    - `metric_name` - (Required) The name of the metric.
+    - `skip_metric_validation` - (Optional) If set to true, skips the validation of the metric. Defaults to `false`.
+  - `application_insights_web_test_location_availability_criterias` - (Optional) A list of application_insights_web_test_location_availability_criteria blocks as defined below:-
+    - `component_id` - (Required) The ID of the Application Insights component.
+    - `failed_location_count` - (Required) The number of failed locations.
+    - `web_test_id` - (Required) The ID of the web test.
+
+  Example Input:
+
+  ```terraform
+
+  metric_alerts = {
+    alert1 = {
+      name                = "1st criterion"
+      description         = "Action will be triggered when ByteHitRatio is less than 90."
+      enabled             = false
+      frequency           = "PT5M"
+      severity            = 2
+      target_resource_type = "Microsoft.Cdn/profiles"
+      window_size         = "PT30M"
+      tags                = {
+        environment = "AVM-Test"
+      }
+      criterias = [{
+        metric_namespace = "Microsoft.Cdn/profiles"
+        metric_name      = "ByteHitRatio"
+        aggregation      = "Average"
+        operator         = "LessThan"
+        threshold        = 90
+      }]
+      actions = [{
+        action_group_id = azurerm_monitor_action_group.example.id
+      }]
+    }
+
+  ```
+  DESCRIPTION
+  nullable    = false
+
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : contains(["PT1M", "PT5M", "PT15M", "PT30M", "PT1H"], v.frequency)])
+    error_message = "The frequency must be either `PT1M`, `PT5M`, `PT15M`, `PT30M` or `PT1H`."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : contains(["PT1M", "PT5M", "PT15M", "PT30M", "PT1H", "PT6H", "PT12H", "P1D"], v.window_size)])
+    error_message = "The window_size must be either `PT1M`, `PT5M`, `PT15M`, `PT30M`, `PT1H`, `PT6H`, `PT12H` or `P1D`."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : contains([0, 1, 2, 3, 4], v.severity)])
+    error_message = "The severity must be either `0`, `1`, `2`, `3` or `4`."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : v.criterias != null ? alltrue([for c in v.criterias : contains(["Average", "Count", "Minimum", "Maximum", "Total"], c.aggregation)]) : true])
+    error_message = "Invalid aggregation value in criterias. Possible values are `Average`, `Count`, `Minimum`, `Maximum` and `Total`."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : v.criterias != null ? alltrue([for c in v.criterias : contains(["Equals", "GreaterThan", "GreaterThanOrEqual", "LessThan", "LessThanOrEqual"], c.operator)]) : true])
+    error_message = "Invalid operator value in criterias. Possible values are `Equals`, `GreaterThan`, `GreaterThanOrEqual`, `LessThan` and `LessThanOrEqual`."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : v.criterias != null ? alltrue([for c in v.criterias : c.dimensions != null ? alltrue([for d in c.dimensions : contains(["Include", "Exclude", "StartsWith"], d.operator)]) : true]) : true])
+    error_message = "Invalid operator value in dimensions. Possible values are `Include`, `Exclude` and `StartsWith`."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : v.dynamic_criterias != null ? alltrue([for dc in v.dynamic_criterias : contains(["Low", "Medium", "High"], dc.alert_sensitivity)]) : true])
+    error_message = "Invalid alert sensitivity value in dynamic_criterias. Possible values are `Low`, `Medium` and `High`."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : v.dynamic_criterias != null ? alltrue([for dc in v.dynamic_criterias : contains(["Average", "Count", "Minimum", "Maximum", "Total"], dc.aggregation)]) : true])
+    error_message = "Invalid aggregation value in dynamic_criterias. Possible values are `Average`, `Count`, `Minimum`, `Maximum` and `Total`."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : v.dynamic_criterias != null ? alltrue([for dc in v.dynamic_criterias : contains(["GreaterThan", "LessThan", "GreaterOrLessThan"], dc.operator)]) : true])
+    error_message = "Invalid operator value in dynamic_criterias. Possible values are `GreaterThan`, `LessThan`, `GreaterOrLessThan`."
+  }
+  validation {
+    condition     = alltrue([for _, v in var.metric_alerts : v.dynamic_criterias != null ? alltrue([for dc in v.dynamic_criterias : dc.dimension != null ? alltrue([for d in dc.dimension : contains(["Include", "Exclude", "StartsWith"], d.operator)]) : true]) : true])
+    error_message = "Invalid operator value in dynamic_criterias dimensions. Possible values are `Include`, `Exclude` and `StartsWith`."
+  }
+}
+
 variable "response_timeout_seconds" {
   type        = number
   default     = 120
@@ -1906,16 +2322,12 @@ variable "response_timeout_seconds" {
   }
 }
 
-#   > Note: only set `skip_service_principal_aad_check` to true if you are assigning a role to a service principal.
-#   DESCRIPTION
-#   nullable    = false
-# }
 variable "role_assignments" {
   type = map(object({
     role_definition_id_or_name             = string
     principal_id                           = string
     description                            = optional(string, null)
-    skip_service_principal_aad_check       = optional(bool, false) #Note: only set `skip_service_principal_aad_check` to true if you are assigning a role to a service principal.
+    skip_service_principal_aad_check       = optional(bool, false) # Note: only set `skip_service_principal_aad_check` to true if you are assigning a role to a service principal.
     condition                              = optional(string, null)
     condition_version                      = optional(string, null)
     delegated_managed_identity_resource_id = optional(string, null)
@@ -1924,7 +2336,7 @@ variable "role_assignments" {
   default     = {}
   description = <<DESCRIPTION
   A map of role assignments to create on the cdn/Front door profile. The map key is deliberately arbitrary to avoid issues where map keys maybe unknown at plan time.
-  
+
   - `role_definition_id_or_name` - The ID or name of the role definition to assign to the principal.
   - `principal_id` - The ID of the principal to assign the role to.
   - `description` - (Optional) The description of the role assignment.
@@ -1933,7 +2345,7 @@ variable "role_assignments" {
   - `condition_version` - (Optional) The version of the condition syntax. Leave as `null` if you are not using a condition, if you are then valid values are '2.0'.
   - `delegated_managed_identity_resource_id` - (Optional) The delegated Azure Resource Id which contains a Managed Identity. Changing this forces a new resource to be created. This field is only used in cross-tenant scenario.
   - `principal_type` - (Optional) The type of the `principal_id`. Possible values are `User`, `Group` and `ServicePrincipal`. It is necessary to explicitly set this attribute when creating role assignments if the principal creating the assignment is constrained by ABAC rules that filters on the PrincipalType attribute.
-  
+
   > Note: only set `skip_service_principal_aad_check` to true if you are assigning a role to a service principal.
   Example Input:
 
@@ -1941,7 +2353,7 @@ variable "role_assignments" {
   role_assignments = {
     role_assignment_2 = {
       role_definition_id_or_name       = "Reader"
-      principal_id                     = data.azurerm_client_config.current.object_id #"125****-c***-4f**-**0d-******53b5**" 
+      principal_id                     = data.azurerm_client_config.current.object_id #"125****-c***-4f**-**0d-******53b5**"
       description                      = "Example role assignment 2 of reader role"
       skip_service_principal_aad_check = false
       principal_type                   = "ServicePrincipal"
@@ -1957,11 +2369,11 @@ variable "role_assignments" {
 variable "sku" {
   type        = string
   default     = "Standard_AzureFrontDoor"
-  description = "The SKU name of the Azure Front Door. Default is `Standard`. Possible values are `standard` and `premium`.SKU name for CDN can be 'Standard_Akamai', 'Standard_ChinaCdn, 'Standard_Microsoft','Standard_Verizon' or 'Premium_Verizon'"
+  description = "The SKU name of the Azure Front Door. Default is `Standard`. Possible values are `standard` and `premium`.SKU name for CDN can be 'Standard_ChinaCdn' or 'Standard_Microsoft' "
 
   validation {
-    condition     = contains(["Standard_AzureFrontDoor", "Premium_AzureFrontDoor", "Standard_Akamai", "Standard_ChinaCdn", "Standard_Microsoft", "Standard_Verizon", "Premium_Verizon"], var.sku)
-    error_message = "The SKU must be either 'Standard_AzureFrontDoor' or 'Premium_AzureFrontDoor' for Front Door. For CDN use correct SKU name"
+    condition     = contains(["Standard_AzureFrontDoor", "Premium_AzureFrontDoor", "Standard_ChinaCdn", "Standard_Microsoft"], var.sku)
+    error_message = "The SKU must be either 'Standard_AzureFrontDoor' or 'Premium_AzureFrontDoor' for Front Door. For CDN use either 'Standard_Microsoft' or 'Standard_ChinaCdn' "
   }
 }
 
